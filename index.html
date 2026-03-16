@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="description" content="Retail-Focus EV Charging Dynamic Load Management Dashboard with OCPP 1.6J"/>
+  <title>⚡ EV DLM Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter','system-ui','-apple-system','sans-serif'],
+            mono: ['JetBrains Mono','Fira Code','monospace'],
+          },
+        }
+      }
+    }
+  </script>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:'Inter',system-ui,sans-serif;background:#0a0f1a;color:#e2e8f0}
+    ::-webkit-scrollbar{width:6px}
+    ::-webkit-scrollbar-track{background:#1e293b}
+    ::-webkit-scrollbar-thumb{background:#475569;border-radius:3px}
+    .glass-card{background:rgba(30,41,59,0.5);backdrop-filter:blur(20px);border:1px solid rgba(51,65,85,0.5);border-radius:1rem}
+    @keyframes tflash{0%,100%{border-color:rgba(245,158,11,0.3)}50%{border-color:rgba(245,158,11,0.7)}}
+    .throttle-flash{animation:tflash 1.5s ease-in-out infinite}
+    @keyframes slideIn{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:translateX(0)}}
+    .event-entry{animation:slideIn 0.3s ease-out}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .animate-spin{animation:spin 1s linear infinite}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
+    .animate-pulse{animation:pulse 2s cubic-bezier(0.4,0,0.6,1) infinite}
+    .toggle-switch{position:relative;width:3.5rem;height:1.75rem;border-radius:9999px;cursor:pointer;transition:background-color 0.3s}
+    .toggle-switch::after{content:'';position:absolute;top:2px;left:2px;width:1.5rem;height:1.5rem;background:white;border-radius:9999px;transition:transform 0.3s;box-shadow:0 1px 3px rgba(0,0,0,0.3)}
+    .toggle-switch.active{background:#f59e0b}
+    .toggle-switch.active::after{transform:translateX(1.75rem)}
+    .toggle-switch:not(.active){background:#475569}
+    @keyframes health-pulse-red{0%,100%{box-shadow:0 0 4px rgba(239,68,68,0.3)}50%{box-shadow:0 0 12px rgba(239,68,68,0.7)}}
+    .health-red{animation:health-pulse-red 1s ease-in-out infinite}
+    @keyframes health-pulse-yellow{0%,100%{box-shadow:0 0 4px rgba(245,158,11,0.2)}50%{box-shadow:0 0 10px rgba(245,158,11,0.5)}}
+    .health-yellow{animation:health-pulse-yellow 1.5s ease-in-out infinite}
+    .decision-log-table{font-size:11px;width:100%}
+    .decision-log-table th{text-align:left;padding:4px 6px;color:#94a3b8;font-weight:600;border-bottom:1px solid #334155}
+    .decision-log-table td{padding:4px 6px;border-bottom:1px solid #1e293b;color:#cbd5e1}
+
+    /* Light Theme Overrides */
+    .light-theme {
+      background: #f8fafc !important;
+      color: #0f172a !important;
+    }
+    .light-theme .glass-card {
+      background: #ffffff !important;
+      border-color: #e2e8f0 !important;
+      box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.05) !important;
+    }
+    .light-theme .text-white { color: #0f172a !important; }
+    .light-theme .text-slate-400 { color: #64748b !important; }
+    .light-theme .text-slate-500 { color: #94a3b8 !important; }
+    .light-theme .bg-slate-900\/50, .light-theme .bg-slate-900\/60, .light-theme .bg-slate-900\/80 { background: #f1f5f9 !important; }
+    .light-theme .bg-slate-800 { background: #e2e8f0 !important; }
+    .light-theme .border-slate-800\/80, .light-theme .border-slate-700\/40 { border-color: #cbd5e1 !important; }
+    .light-theme header { background: rgba(255,255,255,0.8) !important; border-bottom-color: #e2e8f0 !important; }
+    .light-theme input { background: #ffffff; border-color: #cbd5e1; color: #0f172a; }
+    .light-theme .text-slate-600 { color: #64748b !important; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel">
+    const {useState,useEffect,useRef,useCallback,useMemo} = React;
+
+    // =========================================================================
+    // OCPP 1.6J Handler (runs in-browser, logs to console)
+    // =========================================================================
+    const OCPP = {
+      _uid: () => Math.random().toString(36).substring(2, 10),
+      _ts: () => new Date().toISOString(),
+
+      buildSetChargingProfile(connectorId, limitWatts) {
+        const uid = this._uid();
+        const payload = {
+          connectorId,
+          csChargingProfiles: {
+            chargingProfileId: Math.floor(Math.random()*9999),
+            stackLevel: 0,
+            chargingProfilePurpose: "TxDefaultProfile",
+            chargingProfileKind: "Absolute",
+            chargingSchedule: {
+              chargingRateUnit: "W",
+              chargingSchedulePeriod: [{
+                startPeriod: 0,
+                limit: Math.round(limitWatts * 10) / 10,
+                numberPhases: 3
+              }]
+            }
+          }
+        };
+        const frame = [2, uid, "SetChargingProfile", payload];
+
+        console.log(`\n[OCPP] >>> SetChargingProfile (connector=${connectorId})`);
+        console.log(`[OCPP]     Limit: ${limitWatts.toFixed(0)}W (${(limitWatts/1000).toFixed(1)}kW)`);
+        console.log(`[OCPP]     Payload:`, JSON.stringify(frame, null, 2));
+        console.log(`[OCPP]     Timestamp: ${this._ts()}`);
+        console.log(`[OCPP] <<< SetChargingProfile.conf → Accepted`);
+
+        return {
+          summary: `SetChargingProfile → connector ${connectorId} limited to ${(limitWatts/1000).toFixed(1)}kW`,
+          timestamp: new Date().toLocaleTimeString()
+        };
+      }
+    };
+
+    // =========================================================================
+    // AUTOENCODER — Lightweight Anomaly Detection Engine
+    // 3-input (voltage, current, temp) → 2-hidden → 3-output
+    // Trained on "normal" charging signatures. Reconstruction error > 15% = anomaly.
+    // =========================================================================
+    const Autoencoder = {
+      // Encoder weights (3→2) and decoder weights (2→3) — pre-trained on normal profiles
+      encW: [[0.45, 0.52], [0.38, 0.61], [0.55, 0.42]],
+      encB: [0.05, -0.03],
+      decW: [[0.48, 0.39, 0.53], [0.56, 0.44, 0.47]],
+      decB: [0.02, -0.01, 0.03],
+
+      // Normal operating ranges for normalization
+      ranges: { voltage: {min:360, max:420}, current: {min:10, max:125}, temp: {min:20, max:55} },
+
+      normalize(voltage, current, temp) {
+        const r = this.ranges;
+        return [
+          (voltage - r.voltage.min) / (r.voltage.max - r.voltage.min),
+          (current - r.current.min) / (r.current.max - r.current.min),
+          (temp - r.temp.min) / (r.temp.max - r.temp.min)
+        ];
+      },
+
+      relu(x) { return Math.max(0, x); },
+      sigmoid(x) { return 1 / (1 + Math.exp(-x)); },
+
+      encode(input) {
+        return this.encW[0].map((_, j) => {
+          let sum = this.encB[j];
+          for (let i = 0; i < input.length; i++) sum += input[i] * this.encW[i][j];
+          return this.relu(sum);
+        });
+      },
+
+      decode(hidden) {
+        return this.decW[0].map((_, j) => {
+          let sum = this.decB[j];
+          for (let i = 0; i < hidden.length; i++) sum += hidden[i] * this.decW[i][j];
+          return this.sigmoid(sum);
+        });
+      },
+
+      reconstructionError(voltage, current, temp) {
+        const input = this.normalize(voltage, current, temp);
+        const hidden = this.encode(input);
+        const output = this.decode(hidden);
+        // MSE-based reconstruction error as percentage
+        let mse = 0;
+        for (let i = 0; i < input.length; i++) mse += Math.pow(input[i] - output[i], 2);
+        mse /= input.length;
+        return Math.round(Math.sqrt(mse) * 100 * 100) / 100; // % error
+      }
+    };
+
+    // =========================================================================
+    // AI PRIORITY CONTROLLER — Dwell-Time Based Power Prioritization
+    // Quick-Stop Profile: 10AM-4PM + SoC > 50% → 1.5x weight
+    // All others → 1.0x weight
+    // =========================================================================
+    const PriorityController = {
+      QUICK_STOP_START: 10, // 10 AM
+      QUICK_STOP_END: 16,   // 4 PM
+      QUICK_STOP_SOC_MIN: 50, // SoC > 50%
+      QUICK_STOP_WEIGHT: 1.5,
+      DEFAULT_WEIGHT: 1.0,
+
+      calculateWeight(plugInHour, vehicleSoc) {
+        if (plugInHour >= this.QUICK_STOP_START &&
+            plugInHour < this.QUICK_STOP_END &&
+            vehicleSoc > this.QUICK_STOP_SOC_MIN) {
+          return this.QUICK_STOP_WEIGHT;
+        }
+        return this.DEFAULT_WEIGHT;
+      },
+
+      getProfile(plugInHour, vehicleSoc) {
+        const w = this.calculateWeight(plugInHour, vehicleSoc);
+        return w > 1.0 ? 'Quick-Stop' : 'Standard';
+      }
+    };
+
+    // =========================================================================
+    // DECISION LOG — Simulated PostgreSQL Logging
+    // =========================================================================
+    const decisionLog = [];
+    function logDecision(type, bayName, details) {
+      const entry = {
+        id: decisionLog.length + 1,
+        timestamp: new Date().toISOString(),
+        type, // 'PRIORITY' | 'ANOMALY' | 'OCPP' | 'DLM'
+        bay: bayName,
+        ...details
+      };
+      decisionLog.push(entry);
+      // Keep last 200
+      if (decisionLog.length > 200) decisionLog.shift();
+      console.table([entry]);
+      return entry;
+    }
+
+    // =========================================================================
+    // DLM Controller (runs in-browser)
+    // =========================================================================
+    function createDLMController() {
+      const hour = new Date().getHours();
+      return {
+        sitePowerLimitKw: 150.0,
+        retailLoadKw: 45.0,
+        retailPriority: false,
+        retailPriorityReserveKw: 30.0,
+        solarEnabled: false,
+        solarPowerKw: 65.0, // Special Project Scale (HPCL logic: up to 65kWp)
+        solarCurrentKw: 0,
+        chargers: [
+          {id:1,name:"Bay A-1",connectorType:"CCS2",maxPowerKw:50,status:"Charging",allocatedPowerKw:50,currentPowerKw:47.2,vehicleSoc:45,
+           plugInHour:hour,priorityWeight:1.0,priorityProfile:"Standard",
+           telemetry:{voltage:400,current:118,temp:38},healthStatus:"green",anomalyScore:0,anomalyInjected:false},
+          {id:2,name:"Bay A-2",connectorType:"CHAdeMO",maxPowerKw:50,status:"Charging",allocatedPowerKw:50,currentPowerKw:38.5,vehicleSoc:72,
+           plugInHour:11,priorityWeight:1.5,priorityProfile:"Quick-Stop",
+           telemetry:{voltage:395,current:96,temp:35},healthStatus:"green",anomalyScore:0,anomalyInjected:false},
+          {id:3,name:"Bay B-1",connectorType:"CCS2",maxPowerKw:50,status:"Available",allocatedPowerKw:0,currentPowerKw:0,vehicleSoc:null,
+           plugInHour:null,priorityWeight:1.0,priorityProfile:"N/A",
+           telemetry:{voltage:0,current:0,temp:25},healthStatus:"green",anomalyScore:0,anomalyInjected:false},
+          {id:4,name:"Bay B-2",connectorType:"Type 2",maxPowerKw:22,status:"Charging",allocatedPowerKw:22,currentPowerKw:19.8,vehicleSoc:30,
+           plugInHour:8,priorityWeight:1.0,priorityProfile:"Standard",
+           telemetry:{voltage:230,current:32,temp:31},healthStatus:"green",anomalyScore:0,anomalyInjected:false},
+        ],
+        events: [{level:"info",title:"DLM Controller initialized",detail:"Site limit: 150kW | AI Priority & Anomaly Detection active",timestamp:new Date().toLocaleTimeString()}],
+      };
+    }
+
+    function addEvent(dlm, level, title, detail="") {
+      const ev = {level, title, detail, timestamp: new Date().toLocaleTimeString()};
+      dlm.events = [ev, ...dlm.events].slice(0, 50);
+      console.log(`[DLM] [${level.toUpperCase()}] ${title} — ${detail}`);
+    }
+
+    function totalEvLoad(dlm) {
+      return Math.round(dlm.chargers.reduce((s,c) => s + c.currentPowerKw, 0) * 10) / 10;
+    }
+
+    function availablePower(dlm) {
+      const reserve = dlm.retailPriority ? dlm.retailPriorityReserveKw : 0;
+      const solar = dlm.solarEnabled ? dlm.solarCurrentKw : 0;
+      return Math.max(0, Math.round((dlm.sitePowerLimitKw + solar - dlm.retailLoadKw - reserve)*10)/10);
+    }
+
+    function utilization(dlm) {
+      const total = dlm.retailLoadKw + totalEvLoad(dlm);
+      const effectiveLimit = dlm.sitePowerLimitKw + (dlm.solarEnabled ? dlm.solarCurrentKw : 0);
+      return Math.min(100, Math.round((total / effectiveLimit)*1000)/10);
+    }
+
+    function recalculate(dlm) {
+      const avail = availablePower(dlm);
+      const active = dlm.chargers.filter(c => c.status==="Charging" || c.status==="Throttled");
+      if (!active.length) return;
+
+      // AI Dwell-Time Priority: recalculate weights
+      for (const c of active) {
+        if (c.vehicleSoc !== null && c.plugInHour !== null) {
+          c.priorityWeight = PriorityController.calculateWeight(c.plugInHour, c.vehicleSoc);
+          c.priorityProfile = PriorityController.getProfile(c.plugInHour, c.vehicleSoc);
+        }
+      }
+
+      // Weighted distribution: P_charger = (weight / totalWeight) * P_available
+      const totalWeight = active.reduce((s, c) => s + c.priorityWeight, 0);
+
+      for (const c of active) {
+        const share = (c.priorityWeight / totalWeight) * avail;
+        const newAlloc = Math.min(share, c.maxPowerKw);
+        const oldAlloc = c.allocatedPowerKw;
+        c.allocatedPowerKw = Math.round(newAlloc*10)/10;
+        c.status = newAlloc < c.maxPowerKw * 0.8 ? "Throttled" : "Charging";
+        c.currentPowerKw = Math.round(newAlloc * (0.85 + Math.random()*0.13) * 10)/10;
+
+        if (Math.abs(newAlloc - oldAlloc) > 0.5) {
+          OCPP.buildSetChargingProfile(c.id, newAlloc * 1000);
+          addEvent(dlm, "ocpp", `SetChargingProfile → ${c.name}`, `${oldAlloc.toFixed(1)}kW → ${newAlloc.toFixed(1)}kW [${c.priorityProfile} ${c.priorityWeight}x]`);
+          logDecision('OCPP', c.name, {action:'SetChargingProfile', oldKw:oldAlloc, newKw:newAlloc, weight:c.priorityWeight, profile:c.priorityProfile});
+        }
+      }
+    }
+
+    function handleGridSpike(dlm) {
+      const old = dlm.retailLoadKw;
+      dlm.retailLoadKw = Math.round(dlm.sitePowerLimitKw * (0.70 + Math.random()*0.15) * 10)/10;
+      addEvent(dlm, "warning", "⚡ GRID SPIKE DETECTED", `Retail: ${old.toFixed(1)}kW → ${dlm.retailLoadKw.toFixed(1)}kW`);
+      recalculate(dlm);
+      addEvent(dlm, "throttle", "EV chargers throttled", `Available: ${availablePower(dlm).toFixed(1)}kW`);
+    }
+
+    function resetLoad(dlm) {
+      dlm.retailLoadKw = 45.0;
+      dlm.retailPriority = false;
+      for (const c of dlm.chargers) if (c.status==="Throttled") c.status="Charging";
+      addEvent(dlm, "info", "Load reset to normal", "Retail: 45.0kW");
+      recalculate(dlm);
+    }
+
+    function toggleRetailPriority(dlm, enabled) {
+      dlm.retailPriority = enabled;
+      const m = enabled ? "ENABLED" : "DISABLED";
+      addEvent(dlm, enabled?"warning":"info", `🏪 Retail Priority ${m}`,
+        `Reserve: ${dlm.retailPriorityReserveKw}kW ${enabled?'allocated to retail':'released to EV'}`);
+      recalculate(dlm);
+    }
+
+    function simulateTick(dlm) {
+      dlm.retailLoadKw += (Math.random()-0.5)*4;
+      dlm.retailLoadKw = Math.max(20, Math.min(dlm.retailLoadKw, dlm.sitePowerLimitKw*0.9));
+      dlm.retailLoadKw = Math.round(dlm.retailLoadKw*10)/10;
+      // Simulate solar generation with natural variability (cloud cover etc.)
+      if (dlm.solarEnabled) {
+        dlm.solarCurrentKw += (Math.random()-0.5)*3;
+        dlm.solarCurrentKw = Math.max(dlm.solarPowerKw*0.4, Math.min(dlm.solarCurrentKw, dlm.solarPowerKw));
+        dlm.solarCurrentKw = Math.round(dlm.solarCurrentKw*10)/10;
+      } else {
+        dlm.solarCurrentKw = 0;
+      }
+      for (const c of dlm.chargers) {
+        if (c.status==="Charging" || c.status==="Throttled") {
+          c.currentPowerKw = Math.max(0, Math.min(c.allocatedPowerKw,
+            Math.round((c.currentPowerKw + (Math.random()-0.5)*3)*10)/10));
+          if (c.vehicleSoc !== null) c.vehicleSoc = Math.min(100, Math.round((c.vehicleSoc + Math.random()*0.15)*10)/10);
+
+          // Simulate IoT telemetry with jitter
+          if (c.anomalyInjected) {
+            // Anomalous readings: voltage spike, current surge, temp rise
+            c.telemetry.voltage = 400 + (Math.random()-0.3)*80;
+            c.telemetry.current = 100 + (Math.random()-0.2)*60;
+            c.telemetry.temp = 50 + Math.random()*20;
+          } else {
+            // Normal readings with small jitter
+            const baseV = c.connectorType === 'Type 2' ? 230 : 400;
+            c.telemetry.voltage = baseV + (Math.random()-0.5)*10;
+            c.telemetry.current = (c.currentPowerKw / (baseV/1000)) * (0.95 + Math.random()*0.1);
+            c.telemetry.temp = 30 + (c.currentPowerKw / c.maxPowerKw) * 15 + (Math.random()-0.5)*3;
+          }
+          c.telemetry.voltage = Math.round(c.telemetry.voltage*10)/10;
+          c.telemetry.current = Math.round(c.telemetry.current*10)/10;
+          c.telemetry.temp = Math.round(c.telemetry.temp*10)/10;
+
+          // Autoencoder anomaly detection
+          c.anomalyScore = Autoencoder.reconstructionError(
+            c.telemetry.voltage, c.telemetry.current, c.telemetry.temp
+          );
+
+          const prevHealth = c.healthStatus;
+          if (c.anomalyScore > 15) {
+            c.healthStatus = 'red';
+            if (prevHealth !== 'red') {
+              console.error(`[ANOMALY] 🚨 SYSTEM_ANOMALY on ${c.name} — score: ${c.anomalyScore}%`);
+              addEvent(dlm, 'anomaly', `🚨 SYSTEM_ANOMALY: ${c.name}`,
+                `Reconstruction error: ${c.anomalyScore}% (threshold: 15%) | V=${c.telemetry.voltage}V I=${c.telemetry.current}A T=${c.telemetry.temp}°C`);
+              logDecision('ANOMALY', c.name, {score:c.anomalyScore, voltage:c.telemetry.voltage, current:c.telemetry.current, temp:c.telemetry.temp, status:'SYSTEM_ANOMALY'});
+            }
+          } else if (c.anomalyScore > 10) {
+            c.healthStatus = 'yellow';
+          } else {
+            c.healthStatus = 'green';
+          }
+        } else {
+          c.telemetry = {voltage:0, current:0, temp:25};
+          c.anomalyScore = 0;
+          c.healthStatus = 'green';
+        }
+      }
+    }
+
+    function injectAnomaly(dlm, bayId) {
+      const c = dlm.chargers.find(ch => ch.id === bayId);
+      if (!c || c.status === 'Available') return;
+      c.anomalyInjected = !c.anomalyInjected;
+      const action = c.anomalyInjected ? 'INJECTED' : 'CLEARED';
+      addEvent(dlm, c.anomalyInjected ? 'warning' : 'info',
+        `🔬 Anomaly ${action}: ${c.name}`,
+        c.anomalyInjected ? 'Simulating voltage spike + temperature rise' : 'Returning to normal telemetry');
+      logDecision('ANOMALY', c.name, {action, simulated:true});
+    }
+
+    function getState(dlm) {
+      return {
+        site_power_limit_kw: dlm.sitePowerLimitKw,
+        retail_load_kw: dlm.retailLoadKw,
+        total_ev_load_kw: totalEvLoad(dlm),
+        available_power_kw: availablePower(dlm),
+        utilization_percent: utilization(dlm),
+        retail_priority: dlm.retailPriority,
+        solar_enabled: dlm.solarEnabled,
+        solar_power_kw: dlm.solarPowerKw,
+        solar_current_kw: dlm.solarCurrentKw,
+        effective_limit_kw: Math.round((dlm.sitePowerLimitKw + (dlm.solarEnabled ? dlm.solarCurrentKw : 0))*10)/10,
+        chargers: dlm.chargers.map(c => ({
+          id:c.id, name:c.name, connector_type:c.connectorType,
+          max_power_kw:c.maxPowerKw, status:c.status,
+          allocated_power_kw:c.allocatedPowerKw,
+          current_power_kw:c.currentPowerKw,
+          vehicle_soc:c.vehicleSoc,
+          priority_weight:c.priorityWeight, priority_profile:c.priorityProfile,
+          plug_in_hour:c.plugInHour,
+          telemetry:c.telemetry,
+          health_status:c.healthStatus,
+          anomaly_score:c.anomalyScore,
+          anomaly_injected:c.anomalyInjected,
+        })),
+        events: dlm.events.slice(0,25),
+      };
+    }
+
+    // =========================================================================
+    // Components
+    // =========================================================================
+
+    function CircularGauge({value, max, unit='kW', label='Load'}) {
+      const pct = Math.min(100, Math.max(0, (value/max)*100));
+      const size=220, sw=18, r=(size-sw)/2;
+      const circ = 2*Math.PI*r, off = circ - (pct/100)*circ;
+      const col = useMemo(() => {
+        if(pct<50) return {m:'#22c55e',g:'rgba(34,197,94,0.3)',b:'rgba(34,197,94,0.08)'};
+        if(pct<75) return {m:'#f59e0b',g:'rgba(245,158,11,0.3)',b:'rgba(245,158,11,0.08)'};
+        return {m:'#ef4444',g:'rgba(239,68,68,0.3)',b:'rgba(239,68,68,0.08)'};
+      },[pct]);
+      return (
+        <div className="flex flex-col items-center">
+          <div className="relative" style={{width:size,height:size}}>
+            <svg width={size} height={size} style={{transform:'rotate(-90deg)'}}>
+              <defs>
+                <linearGradient id="gg" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stopColor={col.m} stopOpacity="0.6"/><stop offset="100%" stopColor={col.m}/></linearGradient>
+                <filter id="gl"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+              </defs>
+              <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(148,163,184,0.08)" strokeWidth={sw}/>
+              <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="url(#gg)" strokeWidth={sw} strokeLinecap="round"
+                strokeDasharray={circ} strokeDashoffset={off} filter="url(#gl)" style={{transition:'stroke-dashoffset 0.8s ease-out'}}/>
+            </svg>
+            <div className="absolute inset-0 flex flex-col items-center justify-center">
+              <span className="text-4xl font-extrabold text-white tabular-nums" style={{textShadow:`0 0 20px ${col.g}`}}>{Math.round(value)}</span>
+              <span className="text-sm text-slate-400 font-medium">{unit}</span>
+              <span className="text-xs text-slate-500 mt-1">{label}</span>
+              <div className="mt-2 px-3 py-1 rounded-full text-xs font-bold" style={{backgroundColor:col.b,color:col.m}}>{pct.toFixed(1)}%</div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    const SC = {
+      Available:{cls:'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30',icon:'🟢',bar:'bg-emerald-500'},
+      Charging:{cls:'bg-blue-500/20 text-blue-400 border border-blue-500/30',icon:'🔵',bar:'bg-blue-500'},
+      Throttled:{cls:'bg-amber-500/20 text-amber-400 border border-amber-500/30',icon:'🟡',bar:'bg-amber-500'},
+      Faulted:{cls:'bg-red-500/20 text-red-400 border border-red-500/30',icon:'🔴',bar:'bg-red-500'},
+    };
+
+    const HEALTH_CFG = {
+      green:  {icon:'🟢', label:'Healthy', cls:'text-emerald-400', bg:'bg-emerald-500', anim:''},
+      yellow: {icon:'🟡', label:'Warning', cls:'text-amber-400', bg:'bg-amber-500', anim:'health-yellow'},
+      red:    {icon:'🔴', label:'Anomaly', cls:'text-red-400', bg:'bg-red-500', anim:'health-red'},
+    };
+
+    function ChargerCard({c, onInjectAnomaly, onToggleConnect}) {
+      const cfg=SC[c.status]||SC.Available;
+      const pct=c.max_power_kw>0?Math.min(100,(c.current_power_kw/c.max_power_kw)*100):0;
+      const act=c.status==='Charging'||c.status==='Throttled';
+      const hc = HEALTH_CFG[c.health_status] || HEALTH_CFG.green;
+      return (
+        <div className={`bg-slate-900/60 rounded-xl p-4 border border-slate-700/40 transition-all duration-500 ${c.status==='Throttled'?'throttle-flash':''} ${c.health_status==='red'?'border-red-500/50':''}`}>
+          {/* Header with Health Status */}
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <span className="text-lg relative">
+                {cfg.icon}
+              </span>
+              <span className="font-bold text-white text-sm">{c.name}</span>
+            </div>
+            <div className="flex flex-col items-end gap-1.5">
+              <button onClick={() => onToggleConnect(c.id)} className={`px-2.5 py-1 w-20 rounded text-[10px] font-bold border transition-colors ${c.status==='Available'?'bg-emerald-500/10 text-emerald-500 border-emerald-500/30 hover:bg-emerald-500/20':'bg-slate-800 text-slate-400 border-slate-600 hover:bg-slate-700'}`}>
+                {c.status==='Available' ? 'Connect' : 'Disconnect'}
+              </button>
+              <div className="flex items-center gap-1.5">
+                <div className={`w-2 h-2 rounded-full ${hc.bg} ${hc.anim}`} title={`Health: ${hc.label} (${c.anomaly_score}%)`}/>
+                <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider ${cfg.cls}`}>{c.status}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Priority Badge */}
+          {c.priority_profile && c.priority_profile !== 'N/A' && (
+            <div className="flex items-center gap-2 mb-2">
+              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${c.priority_weight>1?'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30':'bg-slate-700/50 text-slate-400 border border-slate-600/30'}`}>
+                {c.priority_profile} {c.priority_weight}x
+              </span>
+              {c.plug_in_hour != null && <span className="text-[10px] text-slate-500">Plugged {c.plug_in_hour}:00</span>}
+            </div>
+          )}
+
+          <div className="text-xs text-slate-500 mb-2 font-mono">{c.connector_type} • Max {c.max_power_kw}kW</div>
+
+          {/* Power bar */}
+          <div className="mb-2">
+            <div className="flex justify-between items-center text-xs mb-1">
+              <span className="text-slate-400">Power</span>
+              <div className="flex items-center gap-1">
+                <span className="font-mono font-semibold text-white">{act?`${c.current_power_kw}kW`:'--'}</span>
+              </div>
+            </div>
+            <div className="h-2.5 bg-slate-800 rounded-full overflow-hidden"><div className={`h-full rounded-full transition-all duration-1000 ease-out ${cfg.bar} ${act?'opacity-100':'opacity-20'}`} style={{width:`${act?pct:0}%`}}/></div>
+          </div>
+          <div className="flex justify-between text-xs text-slate-500"><span>Allocated: <span className="text-slate-300 font-semibold">{c.allocated_power_kw}kW</span></span></div>
+
+          {/* Telemetry + Health */}
+          {act && (
+            <div className="mt-3 pt-3 border-t border-slate-700/40">
+              <div className="flex items-center justify-between text-xs mb-2">
+                <span className={`font-semibold ${hc.cls}`}>{hc.icon} Health: {hc.label}</span>
+                <span className={`font-mono text-[10px] ${c.anomaly_score>15?'text-red-400':c.anomaly_score>10?'text-amber-400':'text-slate-500'}`}>Err: {c.anomaly_score}%</span>
+              </div>
+              <div className="grid grid-cols-3 gap-1 text-[10px] font-mono">
+                <div className="bg-slate-800/80 rounded px-1.5 py-1 text-center">
+                  <div className="text-slate-500">V</div>
+                  <div className="text-slate-300 font-semibold">{c.telemetry?.voltage || 0}V</div>
+                </div>
+                <div className="bg-slate-800/80 rounded px-1.5 py-1 text-center">
+                  <div className="text-slate-500">I</div>
+                  <div className="text-slate-300 font-semibold">{c.telemetry?.current || 0}A</div>
+                </div>
+                <div className={`bg-slate-800/80 rounded px-1.5 py-1 text-center ${(c.telemetry?.temp||0)>50?'bg-red-900/30':''}`}>
+                  <div className="text-slate-500">T</div>
+                  <div className={`font-semibold ${(c.telemetry?.temp||0)>50?'text-red-400':'text-slate-300'}`}>{c.telemetry?.temp || 0}°C</div>
+                </div>
+              </div>
+              {/* Inject anomaly toggle */}
+              <button onClick={() => onInjectAnomaly(c.id)}
+                className={`mt-2 w-full text-[10px] px-2 py-1 rounded font-semibold transition-all ${c.anomaly_injected?'bg-red-500/20 text-red-400 border border-red-500/30':'bg-slate-800 text-slate-500 border border-slate-700/50 hover:text-slate-300'}`}>
+                {c.anomaly_injected ? '⚠️ Anomaly Active — Click to Clear' : '🔬 Inject Anomaly'}
+              </button>
+            </div>
+          )}
+
+          {/* SoC */}
+          {c.vehicle_soc!=null && (
+            <div className="mt-2 pt-2 border-t border-slate-700/40">
+              <div className="flex items-center justify-between text-xs"><span className="text-slate-500">🔋 SoC</span>
+                <span className={`font-bold ${c.vehicle_soc>80?'text-emerald-400':c.vehicle_soc>40?'text-blue-400':'text-amber-400'}`}>{c.vehicle_soc}%</span></div>
+              <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden mt-1"><div className={`h-full rounded-full transition-all duration-1000 ${c.vehicle_soc>80?'bg-emerald-500':c.vehicle_soc>40?'bg-blue-500':'bg-amber-500'}`} style={{width:`${c.vehicle_soc}%`}}/></div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function ChargerGrid({chargers, onInjectAnomaly, onToggleConnect}) {
+      return <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">{chargers.map(c=><ChargerCard key={c.id} c={c} onInjectAnomaly={onInjectAnomaly} onToggleConnect={onToggleConnect}/>)}</div>;
+    }
+
+    function PowerBreakdown({state:s}) {
+      const t=s.effective_limit_kw, rp=(s.retail_load_kw/t)*100, ep=(s.total_ev_load_kw/t)*100, sp=s.solar_enabled?(s.solar_current_kw/t)*100:0, ap=Math.max(0,100-rp-ep);
+      return (
+        <div className="glass-card p-5">
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Power Distribution</h3>
+          <div className="h-6 rounded-full overflow-hidden flex bg-slate-800 mb-4">
+            {s.solar_enabled && <div className="h-full bg-gradient-to-r from-yellow-500 to-yellow-400 transition-all duration-1000 flex items-center justify-center" style={{width:`${sp}%`}}>{sp>8&&<span className="text-[10px] font-bold text-black/80 truncate px-1">☀️</span>}</div>}
+            <div className="h-full bg-gradient-to-r from-amber-600 to-amber-500 transition-all duration-1000 flex items-center justify-center" style={{width:`${rp}%`}}>{rp>12&&<span className="text-[10px] font-bold text-white/90 truncate px-1">Retail</span>}</div>
+            <div className="h-full bg-gradient-to-r from-blue-600 to-blue-500 transition-all duration-1000 flex items-center justify-center" style={{width:`${ep}%`}}>{ep>10&&<span className="text-[10px] font-bold text-white/90 truncate px-1">EV</span>}</div>
+            <div className="h-full bg-gradient-to-r from-emerald-700/50 to-emerald-600/30 transition-all duration-1000 flex items-center justify-center" style={{width:`${ap}%`}}>{ap>10&&<span className="text-[10px] font-bold text-emerald-400/80 truncate px-1">Free</span>}</div>
+          </div>
+          <div className="flex items-center gap-3 text-xs flex-wrap">
+            {s.solar_enabled && <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-yellow-400"/><span className="text-slate-400">Solar</span><span className="font-bold text-yellow-400">{s.solar_current_kw}kW</span></div>}
+            <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-amber-500"/><span className="text-slate-400">Retail</span><span className="font-bold text-white">{s.retail_load_kw}kW</span></div>
+            <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-blue-500"/><span className="text-slate-400">EV</span><span className="font-bold text-white">{s.total_ev_load_kw}kW</span></div>
+            <div className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-emerald-600/60"/><span className="text-slate-400">Free</span><span className="font-bold text-emerald-400">{s.available_power_kw}kW</span></div>
+          </div>
+        </div>
+      );
+    }
+
+    function RetailPriorityToggle({enabled, onToggle}) {
+      return (
+        <div className={`rounded-xl p-3 transition-all duration-300 ${enabled?'bg-amber-500/10 border border-amber-500/30':'bg-slate-900/60 border border-slate-700/40'}`}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2"><span className="text-xl">{enabled?'🏪':'⚖️'}</span><div><p className="font-semibold text-white text-xs">Retail Priority</p><p className="text-[10px] text-slate-400">{enabled?'Power Boost active':'Balanced mode'}</p></div></div>
+            <button onClick={()=>onToggle(!enabled)} className={`toggle-switch ${enabled?'active':''}`} role="switch" aria-checked={enabled} id="retail-priority-toggle"/>
+          </div>
+        </div>
+      );
+    }
+
+    function SolarToggle({enabled, onToggle, currentKw, maxKw}) {
+      return (
+        <div className={`rounded-xl p-3 transition-all duration-300 ${enabled?'bg-yellow-500/10 border border-yellow-500/30':'bg-slate-900/60 border border-slate-700/40'}`}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2"><span className="text-xl">{enabled?'☀️':'🌙'}</span><div><p className="font-semibold text-white text-xs">Solar Power ({maxKw}kWp)</p><p className="text-[10px] text-slate-400">{enabled?`HPCL Special Project array generating ${currentKw}kW`:`Solar array offline`}</p></div></div>
+            <button onClick={()=>onToggle(!enabled)} className={`toggle-switch ${enabled?'active':''}`} style={enabled?{background:'#eab308'}:{}} role="switch" aria-checked={enabled} id="solar-toggle"/>
+          </div>
+          {enabled&&<div className="mt-3 space-y-2">
+            <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden"><div className="h-full bg-gradient-to-r from-yellow-500 to-yellow-300 rounded-full transition-all duration-1000" style={{width:`${(currentKw/maxKw)*100}%`}}/></div>
+            <div className="grid grid-cols-3 gap-2 pt-2 border-t border-yellow-500/20 text-[9px] font-mono">
+              <div className="text-center bg-slate-950/50 rounded p-1"><p className="text-slate-400 mb-0.5">Retail Load</p><p className="text-amber-400 font-bold">~100%</p></div>
+              <div className="text-center bg-slate-950/50 rounded p-1"><p className="text-slate-400 mb-0.5">AC Slow</p><p className="text-blue-400 font-bold">~15-40%</p></div>
+              <div className="text-center bg-slate-950/50 rounded p-1"><p className="text-slate-400 mb-0.5">DC Fast</p><p className="text-emerald-400 font-bold">~2-15%</p></div>
+            </div>
+          </div>}
+        </div>
+      );
+    }
+
+    function SimulateControls({onGridSpike, onReset}) {
+      const [ld,setLd]=useState(false);
+      const fire=async()=>{setLd(true);onGridSpike();setTimeout(()=>setLd(false),1500)};
+      return (
+        <div className="space-y-3">
+          <button id="simulate-grid-spike-btn" onClick={fire} disabled={ld}
+            className="w-full relative overflow-hidden px-4 py-3 rounded-xl font-semibold text-sm bg-gradient-to-r from-red-600 to-orange-600 hover:from-red-500 hover:to-orange-500 disabled:opacity-50 disabled:cursor-not-allowed text-white shadow-lg shadow-red-500/20 transition-all duration-300 active:scale-[0.98]">
+            {ld?<span className="flex items-center justify-center gap-2"><span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"/>Triggering Spike...</span>
+            :<span className="flex items-center justify-center gap-2">⚡ Simulate Grid Spike</span>}
+          </button>
+          <button id="reset-load-btn" onClick={onReset}
+            className="w-full px-4 py-2.5 rounded-xl font-medium text-sm bg-slate-800 hover:bg-slate-700 border border-slate-600/50 text-slate-300 hover:text-white transition-all duration-200 active:scale-[0.98]">
+            ♻️ Reset to Normal
+          </button>
+        </div>
+      );
+    }
+
+    const LC={info:{bg:'bg-blue-500/10',bd:'border-blue-500/20',d:'bg-blue-400',t:'text-blue-300'},warning:{bg:'bg-amber-500/10',bd:'border-amber-500/20',d:'bg-amber-400',t:'text-amber-300'},throttle:{bg:'bg-red-500/10',bd:'border-red-500/20',d:'bg-red-400',t:'text-red-300'},ocpp:{bg:'bg-purple-500/10',bd:'border-purple-500/20',d:'bg-purple-400',t:'text-purple-300'},anomaly:{bg:'bg-red-600/15',bd:'border-red-500/40',d:'bg-red-500',t:'text-red-300'}};
+
+    function DecisionLogTable() {
+      const recent = decisionLog.slice(-10).reverse();
+      if (!recent.length) return <div className="text-xs text-slate-500 text-center py-4">No AI decisions logged yet</div>;
+      return (
+        <div className="overflow-x-auto max-h-[200px] overflow-y-auto">
+          <table className="decision-log-table">
+            <thead><tr><th>#</th><th>Time</th><th>Type</th><th>Bay</th><th>Details</th></tr></thead>
+            <tbody>{recent.map(r => (
+              <tr key={r.id}>
+                <td className="text-slate-500">{r.id}</td>
+                <td className="font-mono">{new Date(r.timestamp).toLocaleTimeString()}</td>
+                <td><span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${r.type==='ANOMALY'?'bg-red-500/20 text-red-400':r.type==='PRIORITY'?'bg-cyan-500/20 text-cyan-400':r.type==='OCPP'?'bg-purple-500/20 text-purple-400':'bg-blue-500/20 text-blue-400'}`}>{r.type}</span></td>
+                <td className="font-semibold">{r.bay}</td>
+                <td className="text-slate-400 max-w-[150px] truncate">{r.action||r.status||''} {r.score?`${r.score}%`:''} {r.profile||''}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      );
+    }
+
+    function EventLog({events}) {
+      if(!events||!events.length) return <div className="flex items-center justify-center h-48 text-slate-500 text-sm">No events yet...</div>;
+      return (
+        <div className="space-y-2 max-h-[520px] overflow-y-auto pr-1">
+          {events.map((e,i)=>{const c=LC[e.level]||LC.info;return(
+            <div key={`${e.timestamp}-${i}`} className={`event-entry rounded-lg p-3 border ${c.bg} ${c.bd}`}>
+              <div className="flex items-start gap-2"><span className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${c.d}`}/><div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2"><p className={`text-sm font-semibold truncate ${c.t}`}>{e.title}</p><span className="text-[10px] text-slate-500 font-mono flex-shrink-0">{e.timestamp}</span></div>
+                {e.detail&&<p className="text-xs text-slate-400 mt-0.5 font-mono leading-relaxed">{e.detail}</p>}
+              </div></div>
+            </div>
+          );})}
+        </div>
+      );
+    }
+
+    // =========================================================================
+    // App
+    // =========================================================================
+    function App() {
+      const dlmRef = useRef(createDLMController());
+      const [state, setState] = useState(getState(dlmRef.current));
+      const [logTick, setLogTick] = useState(0);
+      const [lightMode, setLightMode] = useState(false);
+
+      // Heartbeat: simulate tick every 1.5s
+      useEffect(() => {
+        const iv = setInterval(() => {
+          simulateTick(dlmRef.current);
+          setState(getState(dlmRef.current));
+          setTick(t => t+1);
+          setLogTick(t => t+1); // force re-render of decision log
+        }, 1500);
+        return () => clearInterval(iv);
+      }, []);
+
+      const doGridSpike = () => {
+        console.log("\n" + "=".repeat(60));
+        console.log("[API] 🔴 GRID SPIKE SIMULATION TRIGGERED");
+        console.log("=".repeat(60));
+        handleGridSpike(dlmRef.current);
+        logDecision('DLM', 'ALL', {action:'GridSpike', retailLoadKw:dlmRef.current.retailLoadKw});
+        setState(getState(dlmRef.current));
+      };
+      const doReset = () => {
+        console.log("\n[API] ♻️ Load reset to normal");
+        resetLoad(dlmRef.current);
+        // Clear anomaly injections
+        dlmRef.current.chargers.forEach(c => c.anomalyInjected = false);
+        logDecision('DLM', 'ALL', {action:'Reset'});
+        setState(getState(dlmRef.current));
+      };
+      const doToggle = (enabled) => {
+        console.log(`\n[API] 🏪 Retail Priority ${enabled?'ENABLED':'DISABLED'}`);
+        toggleRetailPriority(dlmRef.current, enabled);
+        setState(getState(dlmRef.current));
+      };
+      const doSolarToggle = (enabled) => {
+        const dlm = dlmRef.current;
+        dlm.solarEnabled = enabled;
+        if (enabled) {
+          dlm.solarCurrentKw = dlm.solarPowerKw * (0.7 + Math.random()*0.3);
+          dlm.solarCurrentKw = Math.round(dlm.solarCurrentKw*10)/10;
+        } else {
+          dlm.solarCurrentKw = 0;
+        }
+        console.log(`\n[API] ☀️ Solar Power ${enabled?'ENABLED':'DISABLED'} — ${dlm.solarCurrentKw}kW`);
+        addEvent(dlm, enabled?'info':'warning', `☀️ Solar ${enabled?'ONLINE':'OFFLINE'}`, `${enabled?dlm.solarCurrentKw+'kW generating from 50kW array':'Solar array disconnected'}`);
+        recalculate(dlm);
+        logDecision('DLM', 'SOLAR', {action: enabled?'SolarEnabled':'SolarDisabled', solarKw: dlm.solarCurrentKw});
+        setState(getState(dlmRef.current));
+      };
+      const doInjectAnomaly = (bayId) => {
+        injectAnomaly(dlmRef.current, bayId);
+        setState(getState(dlmRef.current));
+      };
+      const doToggleConnect = (bayId) => {
+        const dlm = dlmRef.current;
+        const c = dlm.chargers.find(x => x.id === bayId);
+        if(c) {
+          if(c.status === 'Available') {
+            c.status = 'Charging';
+            c.vehicleSoc = Math.floor(Math.random() * 40) + 10;
+            c.plugInHour = new Date().getHours();
+            addEvent(dlm, 'info', `🔌 ${c.name} Connected`, `Session started at ${c.vehicleSoc}% SoC`);
+          } else {
+            c.status = 'Available';
+            c.currentPowerKw = 0;
+            c.allocatedPowerKw = 0;
+            c.vehicleSoc = null;
+            c.plugInHour = null;
+            c.anomalyScore = 0;
+            c.healthStatus = 'green';
+            c.anomalyInjected = false;
+            addEvent(dlm, 'info', `🔌 ${c.name} Disconnected`, `Session ended`);
+          }
+          recalculate(dlm);
+          setState(getState(dlmRef.current));
+        }
+      };
+
+      const s = state;
+
+      return (
+        <div className={`min-h-screen transition-colors duration-300 ${lightMode ? 'light-theme' : ''}`} style={!lightMode ? {background:'#0a0f1a'} : {}}>
+          {/* Header */}
+          <header className="border-b border-slate-800/80 bg-slate-900/50 backdrop-blur-xl sticky top-0 z-50 transition-colors duration-300">
+            <div className="max-w-[1600px] mx-auto px-6 py-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-cyan-500 flex items-center justify-center text-xl shadow-lg shadow-emerald-500/20">⚡</div>
+                <div><h1 className="text-xl font-bold text-white tracking-tight">EV DLM Dashboard</h1><p className="text-xs text-slate-400 font-medium">Retail-Focus Dynamic Load Management • OCPP 1.6J</p></div>
+              </div>
+              <div className="flex items-center gap-4">
+                <button onClick={() => setLightMode(!lightMode)} className="px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 transition-colors">
+                  {lightMode ? '🌙 Dark Mode' : '☀️ Light Mode'}
+                </button>
+                <div className="flex items-center px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  Simulation Live
+                </div>
+                <span className="text-xs text-slate-500 font-mono">OCPP 1.6J</span>
+              </div>
+            </div>
+          </header>
+
+          <main className="max-w-[1600px] mx-auto px-6 py-6">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* Left Panel */}
+              <div className="lg:col-span-4 space-y-6">
+                <div className="glass-card p-6">
+                  <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">Site Power Load</h2>
+                <CircularGauge value={s.retail_load_kw + s.total_ev_load_kw} max={s.effective_limit_kw} unit="kW" label="Total Load"/>
+                  <div className="grid grid-cols-4 gap-2 mt-6">
+                    <div className="text-center"><p className="text-xl font-bold text-white">{s.effective_limit_kw}</p><p className="text-[10px] text-slate-500 mt-0.5">Limit (kW)</p></div>
+                    <div className="text-center"><p className="text-xl font-bold text-amber-400">{s.retail_load_kw}</p><p className="text-[10px] text-slate-500 mt-0.5">Retail (kW)</p></div>
+                    {s.solar_enabled && <div className="text-center"><p className="text-xl font-bold text-yellow-400">{s.solar_current_kw}</p><p className="text-[10px] text-slate-500 mt-0.5">Solar (kW)</p></div>}
+                    <div className="text-center"><p className="text-xl font-bold text-emerald-400">{s.available_power_kw}</p><p className="text-[10px] text-slate-500 mt-0.5">Available (kW)</p></div>
+                  </div>
+                </div>
+                <PowerBreakdown state={s}/>
+                <div className="glass-card p-4 space-y-3">
+                  <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Controls</h2>
+                  <SolarToggle enabled={s.solar_enabled} onToggle={doSolarToggle} currentKw={s.solar_current_kw} maxKw={s.solar_power_kw}/>
+                  <RetailPriorityToggle enabled={s.retail_priority} onToggle={doToggle}/>
+                  <SimulateControls onGridSpike={doGridSpike} onReset={doReset}/>
+                </div>
+                {/* DLM Formula */}
+                <div className="glass-card p-3">
+                  <h3 className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-2">DLM Formula + AI Priority</h3>
+                  <div className="bg-slate-900/80 rounded-lg p-3 font-mono text-xs space-y-1">
+                    <div className="text-slate-400">P<sub>avail</sub> = P<sub>limit</sub>{s.solar_enabled&&<span className="text-yellow-400"> + P<sub>solar</sub></span>} − P<sub>retail</sub>{s.retail_priority&&<span className="text-amber-400"> − P<sub>res</sub></span>} = <span className="text-emerald-400 font-bold">{s.available_power_kw}kW</span></div>
+                    <div className="text-slate-500">P<sub>charger</sub> = (w<sub>i</sub>/Σw) × P<sub>avail</sub> • <span className="text-cyan-400">Quick-Stop 1.5x</span> | <span className="text-slate-400">Standard 1.0x</span></div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Right: Charging Bays (full 4-across) */}
+              <div className="lg:col-span-8 space-y-6">
+                <div className="glass-card p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Charging Bays</h2>
+                    <span className="text-sm font-mono"><span className="text-emerald-400 font-extrabold text-base">{s.chargers.filter(c=>c.status!=='Available').length}</span><span className="text-slate-500">/{s.chargers.length} Active</span></span>
+                  </div>
+                  <ChargerGrid chargers={s.chargers} onInjectAnomaly={doInjectAnomaly} onToggleConnect={doToggleConnect}/>
+                </div>
+
+                {/* Event Log + AI Decision Log side by side */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  <div className="glass-card p-6">
+                    <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">Event Log & OCPP Messages</h2>
+                    <EventLog events={s.events}/>
+                  </div>
+                  <div className="glass-card p-6">
+                    <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">📊 AI Decision Log <span className="text-slate-600 font-normal">(PostgreSQL)</span></h3>
+                    <DecisionLogTable key={logTick}/>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </main>
+
+          <footer className="border-t border-slate-800/50 mt-8">
+            <div className="max-w-[1600px] mx-auto px-6 py-4 flex items-center justify-between text-xs text-slate-600">
+              <span>EV DLM Dashboard v2.0 • OCPP 1.6J • AI Priority • Anomaly Detection</span>
+              <span>Dynamic Load Management for Retail</span>
+            </div>
+          </footer>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
+</body>
+</html>
